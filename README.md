@@ -36,8 +36,19 @@ ciphertext to sshd.
 
 ## One-command connect (`sshmux` CLI)
 
-Instead of running a bridge and typing connection details by hand, run the
-native `sshmux` CLI on the machine you want to reach:
+Install (Homebrew — pulls in `cloudflared` automatically):
+
+```sh
+brew install ar4l/tap/sshmux
+# or track main: brew install --HEAD ar4l/tap/sshmux
+```
+
+First make sure `sshd` is reachable on the machine you want to control:
+- **macOS:** System Settings › General › Sharing › enable **Remote Login**
+- **Linux:** `sudo systemctl enable --now ssh`
+
+Then, instead of running a bridge and typing connection details by hand, just
+run it on that machine:
 
 ```sh
 sshmux                 # starts a token-gated relay + cloudflared quick tunnel,
