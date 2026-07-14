@@ -7,6 +7,10 @@ pub struct ConnectOpts {
     pub bridge_url: String,
     pub username: String,
     pub auth: Auth,
+    /// Host-key fingerprint delivered out-of-band (via the scanned deep link).
+    /// When set and no pin exists yet, it seeds the expected key so first use is
+    /// *verified*, not blind: a mismatch fails closed (HostKeyChanged).
+    pub expected_host_fingerprint: Option<String>,
 }
 
 #[derive(Clone)]

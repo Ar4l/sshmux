@@ -3,6 +3,12 @@ name = "sshmux"
 version = "0.1.0"
 edition = "2021"
 
+# The root package is the wasm web app (built by Trunk). The native CLI and the
+# shared deep-link schema are additional workspace members; `cargo build -p
+# sshmux-cli` compiles only the CLI's dep tree (no leptos/russh/avt/wasm deps).
+[workspace]
+members = ["cli", "link"]
+
 [dependencies]
 russh = { version = "0.62.2", default-features = false, features = ["flate2", "ring"] }
 tokio = { version = "1", default-features = false, features = ["sync", "macros", "io-util"] }
@@ -13,6 +19,7 @@ leptos = { version = "0.8", features = ["csr"] }
 avt = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sshmux-link = { path = "link" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ws_stream_wasm = "0.7"
@@ -30,7 +37,7 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 gloo-storage = "0.3"
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["console", "Document", "EventTarget", "History", "Location", "UrlSearchParams", "VisibilityState", "Window"] }
+web-sys = { version = "0.3", features = ["console", "Document", "EventTarget", "History", "Location", "VisibilityState", "Window"] }
 
 [profile.release]
 opt-level = "s"

@@ -71,7 +71,13 @@ mod wasm {
             .map_err(|e| SshError::Connect(format!("{e:#}")))?;
 
         let key = storage_key(&opts.bridge_url);
-        let expected: Option<String> = LocalStorage::get(&key).ok();
+        // A stored pin wins (normal TOFU). Absent one, seed from the deep-link
+        // fingerprint so first use is verified against the QR-delivered key; a
+        // server key differing from it becomes HostKeyStatus::Changed and is
+        // rejected (fail closed).
+        let expected: Option<String> = LocalStorage::get(&key)
+            .ok()
+            .or_else(|| opts.expected_host_fingerprint.clone());
         let status: Arc<Mutex<Option<HostKeyStatus>>> = Arc::new(Mutex::new(None));
         let handler = PinningHandler {
             expected,

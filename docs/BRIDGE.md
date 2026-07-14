@@ -13,11 +13,13 @@ browser (wasm ssh client)  --wss://-->  bridge  --tcp-->  sshd:22
 
 Run the bridge on the same host as `sshd` (or anywhere that can reach it).
 
-> **One-command shortcut.** `jbcentral mobile` (JetBrains Central CLI) automates
-> everything below — it runs the bridge, brings up a Cloudflare quick tunnel with
-> a trusted cert, mints a short-lived SSH key, and prints a QR that opens this app
-> already connected. Scan and go. The rest of this doc is for running the bridge
-> yourself.
+> **One-command shortcut.** The `sshmux` CLI (`brew install ar4l/tap/sshmux`)
+> automates everything below — it runs a token-gated relay, brings up a
+> Cloudflare quick tunnel with a trusted cert, and prints a QR + URL that open
+> this app pre-filled (bridge, user, and the host-key fingerprint for verified
+> first use). No private key travels in the URL — you supply it once on the
+> pre-filled page. Scan and go. The rest of this doc is for running the bridge
+> yourself. Try `sshmux --local-only` to test without exposing anything.
 
 ## Options (websockify, custom)
 

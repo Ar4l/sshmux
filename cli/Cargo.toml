@@ -1,0 +1,25 @@
+[package]
+name = "sshmux-cli"
+version = "0.1.0"
+edition = "2021"
+description = "One-command connect for sshmux: starts a token-gated ws->tcp relay and a cloudflared quick tunnel, then prints a QR + URL to open the sshmux web app pre-filled."
+
+# The installed binary is `sshmux` (the workspace web package is also named
+# `sshmux`, but package names must be unique — so the package is `sshmux-cli`
+# and only the binary is renamed).
+[[bin]]
+name = "sshmux"
+path = "src/main.rs"
+
+[dependencies]
+# Native only — none of leptos/russh/avt/wasm deps are pulled in here.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "process", "signal", "time", "sync"] }
+tokio-tungstenite = "0.24"
+futures-util = { version = "0.3", features = ["sink"] }
+clap = { version = "4", features = ["derive", "env"] }
+qrcode = { version = "0.14", default-features = false }
+anyhow = "1"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+sshmux-link = { path = "../link" }
