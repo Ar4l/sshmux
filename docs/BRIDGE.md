@@ -69,9 +69,70 @@ self-signed certificates for WebSockets, and there is no override UI. The one
 exception: when developing locally over `http://localhost` (`trunk serve`),
 plain `ws://localhost:8022` works fine.
 
+Every option below runs on the **same VM as `sshd`** — websockify forwards to
+`localhost:22`, and cloudflared/Tailscale only make outbound connections, so
+there is nothing to route inbound and no reason to spin up a separate host.
+A dedicated bridge box only helps if you are fronting many SSH targets at once.
+
 Ranked options:
 
-1. **Tailscale Serve (recommended).** Tailnet-only exposure with automatic,
+1. **Cloudflare Tunnel (recommended for Cloudflare / Zero Trust setups).**
+   Outbound-only: `cloudflared` dials Cloudflare's edge (TCP/UDP 7844), so you
+   can block *all* inbound traffic and never expose an IP or port. This is the
+   right fit if your VM runs WARP / Zero Trust, which is designed to eliminate
+   exactly the kind of inbound port the other options open.
+
+   ```sh
+   # 1. install + authenticate (one time)
+   #    see https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/
+   cloudflared tunnel login
+   cloudflared tunnel create sshmux
+
+   # 2. bind websockify to loopback ONLY — cloudflared reaches it locally,
+   #    nothing on the network can. (Use the systemd unit above.)
+   websockify 127.0.0.1:8022 localhost:22
+
+   # 3. route a hostname to the local websockify port
+   cloudflared tunnel route dns sshmux ssh.example.com
+   ```
+
+   `~/.cloudflared/config.yml`:
+
+   ```yaml
+   tunnel: sshmux
+   credentials-file: /root/.cloudflared/sshmux.json
+   ingress:
+     # http:// here is fine — this hop is loopback-only; Cloudflare terminates
+     # the public TLS. cloudflared proxies the WebSocket upgrade automatically.
+     - hostname: ssh.example.com
+       service: http://127.0.0.1:8022
+     - service: http_status:404
+   ```
+
+   ```sh
+   cloudflared tunnel run sshmux    # or `cloudflared service install` for systemd
+   ```
+
+   Point the connect screen at `wss://ssh.example.com`.
+
+   **Add an auth layer.** A bare tunnel is public to anyone with the URL — it
+   does *not* authenticate. websockify has no auth of its own, so put a
+   **Cloudflare Access** policy (Zero Trust dashboard → Access → Applications)
+   on `ssh.example.com` scoped to your email/SSO. The PWA logs in to Access in
+   the browser first (SSO redirect sets the `CF_Authorization` cookie), and the
+   WebSocket to the same origin rides that cookie. Test this early —
+   WebSocket-through-tunnel with Access has [known
+   quirks](https://community.cloudflare.com/t/websocket-connections-not-working-through-cloudflare-tunnels/604188);
+   if it fights you, you can drop Access and rely on SSH key auth alone and
+   still keep the no-inbound-port and hidden-IP benefits.
+
+   > Not the same as Cloudflare's built-in browser SSH (`cloudflared access
+   > ssh` / their web terminal): those terminate SSH server-side and render
+   > their own terminal, bypassing sshmux. Here the tunnel is only the dumb
+   > `wss://` transport — sshmux still does all SSH crypto in your browser and
+   > the tunnel carries ciphertext.
+
+2. **Tailscale Serve.** Tailnet-only exposure with automatic,
    publicly-trusted certs and no open ports:
 
    ```sh
@@ -79,9 +140,10 @@ Ranked options:
    ```
 
    The bridge is then at `wss://<host>.<tailnet>.ts.net`. Your phone just
-   needs to be on the tailnet. Nothing is exposed to the internet.
+   needs to be on the tailnet. Nothing is exposed to the internet. Also
+   outbound-only, so it coexists fine with a Zero Trust posture.
 
-2. **Tailscale Funnel.** Same as above but public — use only if you need
+3. **Tailscale Funnel.** Same as above but public — use only if you need
    access without the Tailscale app (and ideally with SSH key auth +
    fail2ban-style protections on sshd):
 
@@ -89,7 +151,9 @@ Ranked options:
    tailscale funnel --bg 8022
    ```
 
-3. **Caddy + Let's Encrypt.** For a public bridge on your own domain:
+4. **Caddy + Let's Encrypt.** For a public bridge on your own domain. Note this
+   one *does* open an inbound port (443), so it is the least suitable for a
+   Zero Trust / WARP host — prefer option 1 there:
 
    ```
    bridge.example.com {
@@ -107,10 +171,11 @@ Ranked options:
   itself: prefer key auth, consider a dedicated low-privilege user, and keep
   `sshd_config` tight (e.g. `AllowUsers`, `PasswordAuthentication no` if you
   use key auth in sshmux).
-- Bind websockify to `127.0.0.1` and let the TLS front end (Tailscale/Caddy)
-  be the only listener.
-- Prefer tailnet-only exposure (option 1); a public bridge is a public door
-  to your sshd.
+- Bind websockify to `127.0.0.1` and let the front end (Cloudflare
+  Tunnel/Tailscale/Caddy) be the only thing that reaches it.
+- Prefer an outbound-only, authenticated front end: Cloudflare Tunnel + Access
+  (option 1) or tailnet-only Tailscale Serve (option 2). A public bridge with
+  no auth in front is a public door to your sshd.
 - sshmux pins the SSH host key fingerprint (TOFU) per bridge URL and refuses
   to connect if it changes, so a swapped-out bridge/sshd cannot silently MITM
   you after first use.
