@@ -1,5 +1,7 @@
 # sshmux
 
+**Live: https://aral.cc/sshmux/** (also https://ar4l.github.io/sshmux/)
+
 Mobile-first static web app that is an in-browser SSH client for driving
 tmux-hosted Claude Code (and other) agent sessions. Rust + Leptos (CSR),
 compiled to WebAssembly, served from GitHub Pages. The SSH protocol runs
