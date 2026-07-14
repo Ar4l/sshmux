@@ -1,4 +1,4 @@
-use super::{ConnectOpts, ExecOutput, SshError, SshSession};
+use super::{ConnectOpts, ExecBytes, ExecOutput, SshError, SshSession};
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm::SessionInner;
@@ -14,7 +14,7 @@ mod wasm {
     use russh::ChannelMsg;
 
     use super::super::{
-        transport, Auth, ConnectOpts, ExecOutput, HostKeyStatus, SshError, SshSession,
+        transport, Auth, ConnectOpts, ExecBytes, HostKeyStatus, SshError, SshSession,
     };
 
     pub struct SessionInner {
@@ -149,7 +149,27 @@ mod wasm {
         })
     }
 
-    pub async fn exec(session: &SshSession, cmd: &str) -> Result<ExecOutput, SshError> {
+    const EXEC_TIMEOUT_MS: u32 = 20_000;
+
+    /// exec raced against a timeout: on a half-open transport (mobile network
+    /// blackhole; SSH keepalive is deliberately off on wasm) channel.wait()
+    /// would otherwise pend forever while is_alive() keeps reporting true.
+    pub async fn exec(session: &SshSession, cmd: &str) -> Result<ExecBytes, SshError> {
+        use futures::future::{select, Either};
+        let work = exec_inner(session, cmd);
+        futures::pin_mut!(work);
+        let timeout = gloo_timers::future::TimeoutFuture::new(EXEC_TIMEOUT_MS);
+        futures::pin_mut!(timeout);
+        match select(work, timeout).await {
+            Either::Left((res, _)) => res,
+            Either::Right(_) => {
+                session.inner.alive.set(false);
+                Err(SshError::Disconnected)
+            }
+        }
+    }
+
+    async fn exec_inner(session: &SshSession, cmd: &str) -> Result<ExecBytes, SshError> {
         let inner = &session.inner;
         let channel = {
             let handle = inner.handle.lock().await;
@@ -187,8 +207,8 @@ mod wasm {
             }
         }
 
-        Ok(ExecOutput {
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        Ok(ExecBytes {
+            stdout,
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             exit_code,
         })
@@ -236,6 +256,16 @@ impl SshSession {
 
     /// One session channel per call.
     pub async fn exec(&self, cmd: &str) -> Result<ExecOutput, SshError> {
+        let out = self.exec_bytes(cmd).await?;
+        Ok(ExecOutput {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: out.stderr,
+            exit_code: out.exit_code,
+        })
+    }
+
+    /// Raw-stdout exec for byte-accurate offset tracking (transcript tail).
+    pub async fn exec_bytes(&self, cmd: &str) -> Result<ExecBytes, SshError> {
         #[cfg(target_arch = "wasm32")]
         {
             wasm::exec(self, cmd).await

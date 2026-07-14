@@ -285,7 +285,23 @@ mod runtime {
                             break;
                         }
                         match res {
-                            Ok(text) => ui.capture.set(Some(text)),
+                            Ok((w, h, text)) => {
+                                ui.capture.set(Some(text));
+                                // Remote resize: refresh the stale dims so the
+                                // avt Vt re-sizes; the effect tracks
+                                // active_pane, so this restarts the loop.
+                                if (w, h) != (pane.width, pane.height) {
+                                    state.active_pane.update(|p| {
+                                        if let Some(p) =
+                                            p.as_mut().filter(|p| p.id == pane.id)
+                                        {
+                                            p.width = w;
+                                            p.height = h;
+                                        }
+                                    });
+                                    break;
+                                }
+                            }
                             Err(TmuxError::Ssh(SshError::Disconnected)) => {
                                 schedule_reconnect(state)
                             }

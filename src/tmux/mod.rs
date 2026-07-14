@@ -53,7 +53,11 @@ async fn run_tmux(s: &SshSession, cmd: &str) -> Result<ExecOutput, TmuxError> {
         return Err(TmuxError::NoServer);
     }
     match out.exit_code {
-        Some(0) | None => Ok(out),
+        Some(0) => Ok(out),
+        // No ExitStatus usually means the channel died with the connection;
+        // don't mistake the empty output for a successful empty result.
+        None if s.is_alive() => Ok(out),
+        None => Err(TmuxError::Ssh(SshError::Disconnected)),
         Some(_) => Err(TmuxError::Parse(out.stderr.trim().to_string())),
     }
 }
@@ -78,10 +82,17 @@ pub async fn list_panes(s: &SshSession) -> Result<Vec<Pane>, TmuxError> {
     parse::parse_list_panes(&out.stdout)
 }
 
-/// capture-pane -e -p -t '%N' (visible screen).
-pub async fn capture_pane(s: &SshSession, pane: &Pane) -> Result<String, TmuxError> {
-    let cmd = format!("tmux capture-pane -e -p -t {}", shell_quote(&pane.id));
-    Ok(run_tmux(s, &cmd).await?.stdout)
+/// capture-pane -e -p -t '%N' (visible screen), plus the pane's *current*
+/// width/height (display-message first line) so remote resizes are tracked
+/// between pane-list polls. Returns (width, height, capture text).
+pub async fn capture_pane(s: &SshSession, pane: &Pane) -> Result<(u16, u16, String), TmuxError> {
+    let target = shell_quote(&pane.id);
+    let cmd = format!(
+        "tmux display-message -p -t {target} {} && tmux capture-pane -e -p -t {target}",
+        shell_quote("#{pane_width} #{pane_height}")
+    );
+    let out = run_tmux(s, &cmd).await?;
+    parse::parse_sized_capture(&out.stdout)
 }
 
 /// send-keys -l -- (single-quote shell escaping).

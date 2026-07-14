@@ -42,7 +42,20 @@ pub fn ChatView(#[prop(into)] items: Signal<Vec<ChatItem>>) -> impl IntoView {
     view! {
         <div class="chat-wrap">
             <div class="chat" node_ref=scroll_ref on:scroll=on_scroll>
-                {move || render_items(&items.get())}
+                {move || {
+                    let items = items.get();
+                    if items.is_empty() {
+                        // First tail poll hasn't returned yet.
+                        vec![
+                            view! {
+                                <div class="empty-state">"loading transcript\u{2026}"</div>
+                            }
+                                .into_any(),
+                        ]
+                    } else {
+                        render_items(&items)
+                    }
+                }}
             </div>
             <Show when=move || !stuck.get()>
                 <button

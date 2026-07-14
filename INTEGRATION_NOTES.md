@@ -86,3 +86,34 @@ Contract deviations / notes:
   chat items from re-reading the tail window.
 - Deps added to Cargo.toml (wasm): `js-sys` (visibilitychange Closure cast) and
   web-sys feature `"EventTarget"`.
+
+## Fix agent (review findings)
+
+Contract changes (all callers updated in-repo):
+
+- `SshSession` gained `exec_bytes(&self, cmd) -> Result<ExecBytes, SshError>`
+  (`ExecBytes { stdout: Vec<u8>, stderr: String, exit_code }` in ssh/mod.rs);
+  `exec` is now a lossy-String wrapper over it. `TranscriptTail::poll` uses
+  exec_bytes so its file offset advances by raw bytes (from_utf8_lossy can
+  change byte length when `head -c` tears a multi-byte UTF-8 char);
+  `TranscriptTail.partial` is now `Vec<u8>`.
+- wasm exec is raced against a 20s `gloo_timers` TimeoutFuture; on timeout it
+  marks the session dead and returns `SshError::Disconnected` so reconnect
+  fires on half-open transports (mobile blackhole, no SSH keepalive on wasm).
+- `tmux::capture_pane` now returns `(u16, u16, String)` — current pane
+  width/height (one extra `display-message` in the same exec) + capture text —
+  so the detail screen tracks remote pane resizes; capture_loop updates
+  `state.active_pane` dims when they change.
+- `run_tmux` treats exit_code `None` with a dead session as
+  `TmuxError::Ssh(Disconnected)` instead of success (empty output no longer
+  flashes "no tmux panes" when the connection died mid-exec).
+- `parse_list_panes` skips malformed lines (SEP/newline inside free-form
+  fields) instead of failing the whole list.
+- `project_slug` now maps every non-alphanumeric char to '-' (matches Claude
+  Code's `cwd.replace(/[^a-zA-Z0-9]/g, '-')`; previously only '/' and '.').
+
+Known gap deferred to a follow-up (needs index.html, off-limits here):
+keyboard occlusion — add `interactive-widget=resizes-content` to the viewport
+meta (Android) and a `window.visualViewport` resize handler that offsets
+`.bottom-bar` while the on-screen keyboard is open (iOS Safari's 100dvh does
+not shrink for the keyboard).

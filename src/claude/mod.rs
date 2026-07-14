@@ -11,10 +11,12 @@ pub struct TranscriptRef {
     pub size: u64,
 }
 
+/// Claude Code sanitizes cwd with `replace(/[^a-zA-Z0-9]/g, '-')` — every
+/// non-alphanumeric char (also `_`, spaces, non-ASCII) becomes '-'.
 fn project_slug(pane_path: &str) -> String {
     pane_path
         .chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
 }
 
@@ -81,8 +83,10 @@ pub async fn find_transcripts(
 pub struct TranscriptTail {
     pub path: String,
     pub offset: u64,
-    /// Trailing incomplete JSONL line carried between polls.
-    partial: String,
+    /// Trailing incomplete JSONL line carried between polls. Raw bytes: a
+    /// chunk boundary can tear a multi-byte UTF-8 char, so decoding happens
+    /// only at complete-line boundaries.
+    partial: Vec<u8>,
     /// Started mid-file: discard bytes up to the first newline seen.
     drop_first: bool,
 }
@@ -94,7 +98,7 @@ impl TranscriptTail {
         TranscriptTail {
             path: r.path.clone(),
             offset,
-            partial: String::new(),
+            partial: Vec::new(),
             drop_first: offset > 0,
         }
     }
@@ -108,27 +112,29 @@ impl TranscriptTail {
             self.offset + 1,
             shell_quote(&self.path)
         );
-        let out = s.exec(&cmd).await.map_err(ClaudeError::Ssh)?;
+        // exec_bytes: offset must advance by raw bytes read — lossy UTF-8
+        // conversion inflates a torn multi-byte char into U+FFFD, so a String
+        // length would desync the next tail -c.
+        let out = s.exec_bytes(&cmd).await.map_err(ClaudeError::Ssh)?;
         if out.stderr.contains("Permission denied") {
             return Err(ClaudeError::PermissionDenied);
         }
         if out.stderr.contains("No such file") {
             return Err(ClaudeError::NotFound);
         }
-        // Raw byte count of stdout, before any trimming.
         self.offset += out.stdout.len() as u64;
         Ok(self.ingest(&out.stdout))
     }
 
     /// Pure line-buffering step, separated from poll for native tests.
-    fn ingest(&mut self, chunk: &str) -> Vec<ChatItem> {
+    fn ingest(&mut self, chunk: &[u8]) -> Vec<ChatItem> {
         if chunk.is_empty() {
             return Vec::new();
         }
         let mut buf = std::mem::take(&mut self.partial);
-        buf.push_str(chunk);
+        buf.extend_from_slice(chunk);
         if self.drop_first {
-            match buf.find('\n') {
+            match buf.iter().position(|&b| b == b'\n') {
                 Some(i) => {
                     buf.drain(..=i);
                     self.drop_first = false;
@@ -136,12 +142,15 @@ impl TranscriptTail {
                 None => return Vec::new(), // still inside the first partial line
             }
         }
-        let (complete, partial) = match buf.rfind('\n') {
-            Some(i) => (&buf[..i], &buf[i + 1..]),
-            None => ("", buf.as_str()),
+        let Some(i) = buf.iter().rposition(|&b| b == b'\n') else {
+            self.partial = buf;
+            return Vec::new();
         };
-        let items = complete.split('\n').filter_map(parse::parse_line).collect();
-        self.partial = partial.to_string();
+        let items = String::from_utf8_lossy(&buf[..i])
+            .split('\n')
+            .filter_map(parse::parse_line)
+            .collect();
+        self.partial = buf.split_off(i + 1);
         items
     }
 }
@@ -193,9 +202,14 @@ mod tests {
     }
 
     #[test]
-    fn slug_replaces_slash_and_dot() {
+    fn slug_replaces_all_non_alphanumerics() {
         assert_eq!(project_slug("/Users/a.b/proj"), "-Users-a-b-proj");
         assert_eq!(project_slug("/tmp"), "-tmp");
+        assert_eq!(
+            project_slug("/Users/A.De.Moor/Downloads/run_vllm"),
+            "-Users-A-De-Moor-Downloads-run-vllm"
+        );
+        assert_eq!(project_slug("/a b/c\u{e9}d"), "-a-b-c-d");
     }
 
     #[test]
@@ -218,8 +232,8 @@ mod tests {
     fn ingest_buffers_partial_lines_across_chunks() {
         let mut t = tail(0);
         let (head, rest) = USER.split_at(20);
-        assert!(t.ingest(&format!("{head}")).is_empty());
-        let items = t.ingest(&format!("{rest}\n"));
+        assert!(t.ingest(head.as_bytes()).is_empty());
+        let items = t.ingest(format!("{rest}\n").as_bytes());
         assert_eq!(items, vec![ChatItem::User { text: "hi".into() }]);
         assert!(t.partial.is_empty());
     }
@@ -227,17 +241,17 @@ mod tests {
     #[test]
     fn ingest_keeps_trailing_partial() {
         let mut t = tail(0);
-        let items = t.ingest(&format!("{USER}\n{{\"type\":"));
+        let items = t.ingest(format!("{USER}\n{{\"type\":").as_bytes());
         assert_eq!(items.len(), 1);
-        assert_eq!(t.partial, "{\"type\":");
+        assert_eq!(t.partial, b"{\"type\":");
     }
 
     #[test]
     fn ingest_drops_first_partial_line_when_started_mid_file() {
         let mut t = tail(1_000_000);
         // no newline yet: everything is still the torn first line
-        assert!(t.ingest("age\":{\"cont").is_empty());
-        let items = t.ingest(&format!("ent\"}}}}\n{USER}\n"));
+        assert!(t.ingest(b"age\":{\"cont").is_empty());
+        let items = t.ingest(format!("ent\"}}}}\n{USER}\n").as_bytes());
         assert_eq!(items, vec![ChatItem::User { text: "hi".into() }]);
         assert!(!t.drop_first);
     }
@@ -245,8 +259,22 @@ mod tests {
     #[test]
     fn ingest_empty_chunk_is_noop() {
         let mut t = tail(0);
-        t.partial = "abc".into();
-        assert!(t.ingest("").is_empty());
-        assert_eq!(t.partial, "abc");
+        t.partial = b"abc".to_vec();
+        assert!(t.ingest(b"").is_empty());
+        assert_eq!(t.partial, b"abc");
+    }
+
+    #[test]
+    fn ingest_reassembles_utf8_char_torn_across_chunks() {
+        let mut t = tail(0);
+        let line = r#"{"type":"user","message":{"content":"héllo"}}"#;
+        let bytes = line.as_bytes();
+        // split inside the 2-byte 'é' (byte 39 is its first byte)
+        let cut = line.find('é').unwrap() + 1;
+        assert!(t.ingest(&bytes[..cut]).is_empty());
+        let mut rest = bytes[cut..].to_vec();
+        rest.push(b'\n');
+        let items = t.ingest(&rest);
+        assert_eq!(items, vec![ChatItem::User { text: "héllo".into() }]);
     }
 }

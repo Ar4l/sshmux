@@ -85,12 +85,22 @@ pub fn ConnectScreen() -> impl IntoView {
         };
 
         if remember.get_untracked() {
+            let key_mode = use_key.get_untracked();
             store_saved(&SavedForm {
                 bridge_url: url.clone(),
                 username: user.clone(),
-                use_key: use_key.get_untracked(),
-                password: password.get_untracked(),
-                private_key: private_key.get_untracked(),
+                use_key: key_mode,
+                // never persist the secret of the unselected auth mode
+                password: if key_mode {
+                    String::new()
+                } else {
+                    password.get_untracked()
+                },
+                private_key: if key_mode {
+                    private_key.get_untracked()
+                } else {
+                    String::new()
+                },
             });
         } else {
             clear_saved();
@@ -247,7 +257,15 @@ pub fn ConnectScreen() -> impl IntoView {
                     <input
                         type="checkbox"
                         prop:checked=move || remember.get()
-                        on:change:target=move |ev| remember.set(ev.target().checked())
+                        on:change:target=move |ev| {
+                            let checked = ev.target().checked();
+                            remember.set(checked);
+                            if !checked {
+                                // drop stored plaintext secrets immediately,
+                                // not only on the next connect
+                                clear_saved();
+                            }
+                        }
                     />
                     <span>"remember on this device"</span>
                 </label>

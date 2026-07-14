@@ -38,6 +38,14 @@ pub struct ExecOutput {
     pub exit_code: Option<u32>,
 }
 
+/// Raw-stdout variant of ExecOutput: byte-accurate lengths survive (lossy
+/// UTF-8 conversion can change them when output is cut mid-character).
+pub struct ExecBytes {
+    pub stdout: Vec<u8>,
+    pub stderr: String,
+    pub exit_code: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SshError {
     Connect(String),

@@ -208,7 +208,7 @@ code,
   color: var(--fg4);
   border-radius: 6px;
   padding: 6px 14px;
-  min-height: 36px;
+  min-height: 44px;
   font-size: 14px;
 }
 
@@ -258,8 +258,8 @@ code,
   border: none;
   color: var(--red);
   font-size: 20px;
-  min-height: 32px;
-  min-width: 32px;
+  min-height: 44px;
+  min-width: 44px;
 }
 
 .empty-state {
@@ -531,9 +531,10 @@ code,
 
 .transcript-picker {
   max-width: 110px;
-  font-size: 13px;
+  /* 16px minimum: below that iOS Safari zooms on focus */
+  font-size: 16px;
   padding: 6px 8px;
-  min-height: 36px;
+  min-height: 44px;
 }
 
 .view-toggle {
@@ -581,7 +582,7 @@ code,
 .qk-btn {
   flex: 1;
   min-width: 48px;
-  min-height: 38px;
+  min-height: 44px;
   font-size: 14px;
   font-family: var(--font-mono);
   color: var(--fg4);
@@ -837,5 +838,5 @@ code,
   font-size: 13px;
   border: 1px solid var(--gray);
   box-shadow: 0 2px 8px rgb(0 0 0 / 40%);
-  min-height: 36px;
+  min-height: 44px;
 }

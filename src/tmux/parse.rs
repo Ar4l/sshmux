@@ -11,39 +11,57 @@ pub const SEP: char = '\u{241E}';
 pub fn parse_list_panes(out: &str) -> Result<Vec<Pane>, TmuxError> {
     let mut panes = Vec::new();
     for line in out.lines() {
-        if line.is_empty() {
-            continue;
+        // Free-form fields (session/window names, title, path) can contain
+        // SEP or newlines and shift/split a record; skip malformed lines
+        // rather than failing the whole list on every poll.
+        if let Some(pane) = parse_pane_line(line) {
+            panes.push(pane);
         }
-        let f: Vec<&str> = line.split(SEP).collect();
-        if f.len() < 10 {
-            return Err(TmuxError::Parse(format!(
-                "expected 10 fields, got {}: {line}",
-                f.len()
-            )));
-        }
-        let n = f.len();
-        // pane_title is the only free-form field that can plausibly contain
-        // the separator; re-join anything between the 6 leading and 3
-        // trailing fixed fields.
-        let title = f[6..n - 3].join(&SEP.to_string());
-        let num = |field: &str, raw: &str| {
-            raw.parse::<u32>()
-                .map_err(|_| TmuxError::Parse(format!("bad {field} {raw:?} in: {line}")))
-        };
-        panes.push(Pane {
-            id: f[0].to_string(),
-            session_name: f[1].to_string(),
-            window_index: num("window_index", f[2])?,
-            window_name: f[3].to_string(),
-            command: f[4].to_string(),
-            path: f[5].to_string(),
-            title,
-            width: num("width", f[n - 3])? as u16,
-            height: num("height", f[n - 2])? as u16,
-            active: f[n - 1] == "1",
-        });
     }
     Ok(panes)
+}
+
+fn parse_pane_line(line: &str) -> Option<Pane> {
+    if line.is_empty() {
+        return None;
+    }
+    let f: Vec<&str> = line.split(SEP).collect();
+    if f.len() < 10 {
+        return None;
+    }
+    let n = f.len();
+    // pane_title is the only free-form field that can plausibly contain
+    // the separator; re-join anything between the 6 leading and 3
+    // trailing fixed fields.
+    let title = f[6..n - 3].join(&SEP.to_string());
+    let num = |raw: &str| raw.parse::<u32>().ok();
+    Some(Pane {
+        id: f[0].to_string(),
+        session_name: f[1].to_string(),
+        window_index: num(f[2])?,
+        window_name: f[3].to_string(),
+        command: f[4].to_string(),
+        path: f[5].to_string(),
+        title,
+        width: num(f[n - 3])? as u16,
+        height: num(f[n - 2])? as u16,
+        active: f[n - 1] == "1",
+    })
+}
+
+/// Parse `capture_pane` output: first line is "#{pane_width} #{pane_height}"
+/// from display-message, the remainder is the capture text.
+pub fn parse_sized_capture(out: &str) -> Result<(u16, u16, String), TmuxError> {
+    let (first, rest) = out.split_once('\n').unwrap_or((out, ""));
+    let mut it = first.split_whitespace();
+    let mut dim = || {
+        it.next()
+            .and_then(|v| v.parse::<u16>().ok())
+            .ok_or_else(|| TmuxError::Parse(format!("bad pane size line: {first:?}")))
+    };
+    let w = dim()?;
+    let h = dim()?;
+    Ok((w, h, rest.to_string()))
 }
 
 #[cfg(test)]
@@ -109,16 +127,39 @@ mod tests {
     }
 
     #[test]
-    fn too_few_fields_is_parse_error() {
-        let out = line(&["%1", "s", "0", "w", "zsh", "/tmp", "t", "80", "24"]);
-        assert!(matches!(parse_list_panes(&out), Err(TmuxError::Parse(_))));
+    fn malformed_lines_are_skipped_not_fatal() {
+        // too few fields (e.g. a record split by a newline in a name)
+        let short = line(&["%1", "s", "0", "w", "zsh", "/tmp", "t", "80", "24"]);
+        assert!(parse_list_panes(&short).unwrap().is_empty());
+        // non-numeric fixed fields (e.g. SEP inside window_name shifted them)
+        let bad_idx = line(&["%1", "s", "x", "w", "zsh", "/tmp", "t", "80", "24", "1"]);
+        assert!(parse_list_panes(&bad_idx).unwrap().is_empty());
+        // good lines around a bad one still parse
+        let good = line(&["%0", "s", "0", "w", "zsh", "/tmp", "t", "80", "24", "1"]);
+        let out = format!("{bad_idx}\n{good}\n");
+        let panes = parse_list_panes(&out).unwrap();
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].id, "%0");
     }
 
     #[test]
-    fn non_numeric_field_is_parse_error() {
-        let out = line(&["%1", "s", "x", "w", "zsh", "/tmp", "t", "80", "24", "1"]);
-        assert!(matches!(parse_list_panes(&out), Err(TmuxError::Parse(_))));
-        let out = line(&["%1", "s", "0", "w", "zsh", "/tmp", "t", "wide", "24", "1"]);
-        assert!(matches!(parse_list_panes(&out), Err(TmuxError::Parse(_))));
+    fn sized_capture_splits_dimensions_and_text() {
+        let (w, h, text) = parse_sized_capture("120 40\nline1\nline2").unwrap();
+        assert_eq!((w, h), (120, 40));
+        assert_eq!(text, "line1\nline2");
+        let (w, h, text) = parse_sized_capture("80 24\n").unwrap();
+        assert_eq!((w, h, text.as_str()), (80, 24, ""));
+    }
+
+    #[test]
+    fn sized_capture_bad_first_line_is_parse_error() {
+        assert!(matches!(
+            parse_sized_capture("garbage\nx"),
+            Err(TmuxError::Parse(_))
+        ));
+        assert!(matches!(
+            parse_sized_capture(""),
+            Err(TmuxError::Parse(_))
+        ));
     }
 }
