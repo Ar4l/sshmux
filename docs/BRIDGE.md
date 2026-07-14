@@ -13,6 +13,12 @@ browser (wasm ssh client)  --wss://-->  bridge  --tcp-->  sshd:22
 
 Run the bridge on the same host as `sshd` (or anywhere that can reach it).
 
+> **One-command shortcut.** `jbcentral mobile` (JetBrains Central CLI) automates
+> everything below — it runs the bridge, brings up a Cloudflare quick tunnel with
+> a trusted cert, mints a short-lived SSH key, and prints a QR that opens this app
+> already connected. Scan and go. The rest of this doc is for running the bridge
+> yourself.
+
 ## Options (websockify, custom)
 
 [websockify](https://github.com/novnc/websockify) is the reference

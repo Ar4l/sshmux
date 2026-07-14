@@ -33,6 +33,10 @@ ciphertext to sshd.
 - Claude Code panes get a Chat view by tailing the session transcript JSONL
   over SSH `exec` and rendering user/assistant/tool items as bubbles.
 - Input goes back through `tmux send-keys`.
+- **QR deep link.** Opening the app with a `#v=1&bridge=…&user=…&key=<hex ed25519
+  seed>` URL fragment prefills the connect form and connects automatically, then
+  scrubs the fragment. The key material rides the fragment, so it never reaches a
+  web server. `jbcentral mobile` generates such a link as a scannable QR.
 
 ## Quickstart
 
