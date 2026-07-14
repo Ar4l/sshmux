@@ -1,0 +1,9 @@
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+
+# ring compiles C for wasm; Apple clang has no wasm backend, so point cc-rs
+# at a wasm-capable clang (brew install llvm). These do NOT override env vars
+# already set (CI exports CC_wasm32_unknown_unknown=clang on Linux).
+[env]
+CC_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/clang"
+AR_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/llvm-ar"

@@ -1,0 +1,49 @@
+pub mod session;
+#[cfg(target_arch = "wasm32")]
+pub mod transport;
+
+#[derive(Clone)]
+pub struct ConnectOpts {
+    pub bridge_url: String,
+    pub username: String,
+    pub auth: Auth,
+}
+
+#[derive(Clone)]
+pub enum Auth {
+    Password(String),
+    /// Pasted OpenSSH PEM, UNENCRYPTED only (MVP).
+    PrivateKey(String),
+}
+
+/// String payloads are SHA256 fingerprints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostKeyStatus {
+    New(String),
+    Known,
+    Changed { old: String, new: String },
+}
+
+/// Cloneable handle to a live SSH connection (internally Rc<...>; wasm is
+/// single-threaded).
+#[derive(Clone)]
+pub struct SshSession {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) inner: std::rc::Rc<session::SessionInner>,
+}
+
+pub struct ExecOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SshError {
+    Connect(String),
+    Auth(String),
+    HostKeyChanged { old: String, new: String },
+    KeyParse(String),
+    Channel(String),
+    Disconnected,
+}
