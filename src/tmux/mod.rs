@@ -77,7 +77,10 @@ pub async fn list_panes(s: &SshSession) -> Result<Vec<Pane>, TmuxError> {
         "#{pane_active}",
     ]
     .join(&parse::SEP.to_string());
-    let cmd = format!("tmux list-panes -a -F {}", shell_quote(&fmt));
+    // `-u` forces tmux to assume UTF-8 regardless of the SSH exec channel's
+    // locale (which is typically C/POSIX). Without it tmux sanitizes the
+    // non-ASCII field separator to `_`, and every record fails to parse.
+    let cmd = format!("tmux -u list-panes -a -F {}", shell_quote(&fmt));
     let out = run_tmux(s, &cmd).await?;
     parse::parse_list_panes(&out.stdout)
 }
@@ -88,7 +91,7 @@ pub async fn list_panes(s: &SshSession) -> Result<Vec<Pane>, TmuxError> {
 pub async fn capture_pane(s: &SshSession, pane: &Pane) -> Result<(u16, u16, String), TmuxError> {
     let target = shell_quote(&pane.id);
     let cmd = format!(
-        "tmux display-message -p -t {target} {} && tmux capture-pane -e -p -t {target}",
+        "tmux -u display-message -p -t {target} {} && tmux -u capture-pane -e -p -t {target}",
         shell_quote("#{pane_width} #{pane_height}")
     );
     let out = run_tmux(s, &cmd).await?;
@@ -98,7 +101,7 @@ pub async fn capture_pane(s: &SshSession, pane: &Pane) -> Result<(u16, u16, Stri
 /// send-keys -l -- (single-quote shell escaping).
 pub async fn send_literal_text(s: &SshSession, pane_id: &str, text: &str) -> Result<(), TmuxError> {
     let cmd = format!(
-        "tmux send-keys -t {} -l -- {}",
+        "tmux -u send-keys -t {} -l -- {}",
         shell_quote(pane_id),
         shell_quote(text)
     );
@@ -108,7 +111,7 @@ pub async fn send_literal_text(s: &SshSession, pane_id: &str, text: &str) -> Res
 /// NO -l; key names: Escape, C-c, Tab, Up, Down, Enter.
 pub async fn send_key(s: &SshSession, pane_id: &str, key: &str) -> Result<(), TmuxError> {
     let cmd = format!(
-        "tmux send-keys -t {} {}",
+        "tmux -u send-keys -t {} {}",
         shell_quote(pane_id),
         shell_quote(key)
     );
