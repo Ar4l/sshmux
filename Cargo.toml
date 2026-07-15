@@ -1,6 +1,6 @@
 [package]
 name = "sshmux"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 
 # The root package is the wasm web app (built by Trunk). The native CLI and the

@@ -1,6 +1,6 @@
 [package]
 name = "sshmux-cli"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "One-command connect for sshmux: starts a token-gated ws->tcp relay and a cloudflared quick tunnel, then prints a QR + URL to open the sshmux web app pre-filled."
 
