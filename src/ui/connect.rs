@@ -1,3 +1,4 @@
+use leptos::html::{Input, Textarea};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
@@ -84,8 +85,10 @@ pub fn ConnectScreen() -> impl IntoView {
 
     let saved = load_saved();
     // A deep link (scanned QR / clicked URL) overrides saved coordinates but is
-    // not persisted unless the user opts into "remember".
+    // not persisted unless the user opts into "remember". Arriving via a link is
+    // what drives the "no-click" flow below (auto-connect / autofocus).
     let deeplink = read_deeplink();
+    let arrived_via_link = deeplink.is_some();
     let remember = RwSignal::new(saved.is_some() && deeplink.is_none());
     let saved = saved.unwrap_or_default();
     let (dl_bridge, dl_user, dl_fp) = match deeplink {
@@ -103,6 +106,11 @@ pub fn ConnectScreen() -> impl IntoView {
     let connecting = RwSignal::new(false);
     // Set when connect fails with HostKeyChanged: (old, new) fingerprints.
     let key_changed = RwSignal::new(None::<(String, String)>);
+
+    // Focus targets for the "one field, no button" flow: when a link supplies
+    // everything but the secret, jump the cursor straight into it.
+    let password_ref: NodeRef<Input> = NodeRef::new();
+    let key_ref: NodeRef<Textarea> = NodeRef::new();
 
     let do_connect = move |trust_changed_key: bool| {
         if connecting.get_untracked() {
@@ -181,6 +189,50 @@ pub fn ConnectScreen() -> impl IntoView {
             }
             connecting.set(false);
         });
+    };
+
+    // No-click flow, only when we arrived via a `#c=` deep link (never on a
+    // blank/manual visit). If the selected auth mode already has its secret
+    // (e.g. a remembered private key or password), connect automatically — the
+    // link supplied everything needed, so no click is required. Otherwise focus
+    // the empty secret field so it's "one field, no button": the user types the
+    // password and presses Enter (see `submit_on_enter`). Runs once; on failure
+    // the error shows as usual and we do NOT retry, so no tight loop.
+    if arrived_via_link {
+        let has_secret = if use_key.get_untracked() {
+            !private_key.get_untracked().trim().is_empty()
+        } else {
+            !password.get_untracked().is_empty()
+        };
+        if has_secret {
+            // Everything needed is present: connect once, on next tick so the
+            // view is mounted (ConnStatus::Connecting drives the spinner).
+            Effect::new(move |prev: Option<()>| {
+                if prev.is_none() {
+                    do_connect(false);
+                }
+            });
+        } else {
+            // Secret missing: focus its field. `.get()` tracks the NodeRef, so
+            // this re-runs and focuses once the element is actually mounted.
+            Effect::new(move |_| {
+                let focused = if use_key.get() {
+                    key_ref.get().map(|el| el.focus())
+                } else {
+                    password_ref.get().map(|el| el.focus())
+                };
+                let _ = focused;
+            });
+        }
+    }
+
+    // Enter in a secret field submits the connect, matching the "no button"
+    // intent. Guarded by `connecting` inside `do_connect`.
+    let submit_on_enter = move |ev: web_sys::KeyboardEvent| {
+        if ev.key() == "Enter" {
+            ev.prevent_default();
+            do_connect(false);
+        }
     };
 
     view! {
@@ -273,8 +325,11 @@ pub fn ConnectScreen() -> impl IntoView {
                                 <span class="field-label">"password"</span>
                                 <input
                                     type="password"
+                                    enterkeyhint="go"
+                                    node_ref=password_ref
                                     prop:value=move || password.get()
                                     on:input:target=move |ev| password.set(ev.target().value())
+                                    on:keydown=submit_on_enter
                                 />
                             </label>
                         }
@@ -287,6 +342,7 @@ pub fn ConnectScreen() -> impl IntoView {
                             rows="6"
                             autocapitalize="off"
                             spellcheck="false"
+                            node_ref=key_ref
                             placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                             prop:value=move || private_key.get()
                             on:input:target=move |ev| private_key.set(ev.target().value())
