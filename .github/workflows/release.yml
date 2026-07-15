@@ -18,11 +18,9 @@ jobs:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
-          - os: macos-13
-            target: x86_64-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.os }}
     steps:
@@ -31,10 +29,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install musl tools
+      # musl builds (both x86_64 and aarch64) are produced with cargo-zigbuild:
+      # zig supplies the C compiler + linker, so we don't depend on apt's
+      # musl-tools package (the arm64 mirror ports.ubuntu.com is unreliable and
+      # the aarch64 job previously failed fetching musl-tools with exit 100).
+      - name: Set up cargo-zigbuild
         if: contains(matrix.target, 'linux-musl')
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - uses: mlugg/setup-zig@v2
+        if: contains(matrix.target, 'linux-musl')
       - name: Build (CLI only, static on musl)
+        if: contains(matrix.target, 'linux-musl')
+        run: cargo zigbuild --release -p sshmux-cli --target ${{ matrix.target }}
+      - name: Build (CLI only)
+        if: ${{ !contains(matrix.target, 'linux-musl') }}
         run: cargo build --release -p sshmux-cli --target ${{ matrix.target }}
       - name: Package
         run: |
