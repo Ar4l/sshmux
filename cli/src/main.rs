@@ -5,21 +5,32 @@
 //! sshmux web app with the connection pre-filled. No inbound port is opened;
 //! the public URL reaches sshd only via a 128-bit path token.
 
-use sshmux_cli::{hostkey, relay, tunnel};
+use sshmux_cli::{hostkey, relay, trust, tunnel};
 
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use qrcode::render::unicode;
 use qrcode::QrCode;
 use rand::RngCore;
 use sshmux_link::DeepLink;
 
 /// Drive your tmux agents from your phone: run sshmux, scan the QR.
+///
+/// With no subcommand, sshmux starts the relay + tunnel and prints the QR/URL.
 #[derive(Parser, Debug)]
 #[command(name = "sshmux", version)]
 struct Args {
+    #[command(subcommand)]
+    cmd: Option<Command>,
+
+    #[command(flatten)]
+    serve: ServeArgs,
+}
+
+#[derive(clap::Args, Debug)]
+struct ServeArgs {
     /// SSH username to pre-fill (default: $USER).
     #[arg(long, env = "USER")]
     user: Option<String>,
@@ -46,10 +57,94 @@ struct Args {
     local_only: bool,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Trust a browser device: append its public key to ~/.ssh/authorized_keys,
+    /// scoped to a loopback source (from="127.0.0.1",restrict). Trust is local
+    /// and manual — the relay NEVER installs keys, so a leaked URL can't plant one.
+    Trust {
+        /// Public key line, or "-" to read one line from stdin (preferred —
+        /// keeps the key out of shell history). Generate one in the web app.
+        key: String,
+        /// Short label recorded in the entry comment (sshmux:<label>). [A-Za-z0-9_.-]
+        #[arg(long)]
+        label: String,
+        /// Also allow the IPv6 loopback source (::1).
+        #[arg(long)]
+        allow_ipv6: bool,
+    },
+    /// List sshmux-managed trusted keys (label, type, fingerprint).
+    Trusted,
+    /// Remove sshmux-managed keys with the given label.
+    Untrust {
+        /// Label passed to `sshmux trust --label`.
+        label: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    match args.cmd {
+        Some(cmd) => run_command(cmd),
+        None => run_serve(args.serve).await,
+    }
+}
 
+/// Dispatch the `trust`/`trusted`/`untrust` management subcommands. These are
+/// synchronous and never touch the relay/tunnel.
+fn run_command(cmd: Command) -> Result<()> {
+    match cmd {
+        Command::Trust {
+            key,
+            label,
+            allow_ipv6,
+        } => {
+            let key_input = if key == "-" {
+                read_stdin_line()?
+            } else {
+                key
+            };
+            match trust::add(&key_input, &label, allow_ipv6)? {
+                trust::AddOutcome::Added => println!(
+                    "sshmux: trusted '{label}' — added to ~/.ssh/authorized_keys \
+                     (from=\"127.0.0.1\",restrict). Revoke with: sshmux untrust {label}"
+                ),
+                trust::AddOutcome::AlreadyTrusted => {
+                    println!("sshmux: that key is already trusted (no change)")
+                }
+            }
+        }
+        Command::Trusted => {
+            let entries = trust::list()?;
+            if entries.is_empty() {
+                println!("sshmux: no sshmux-managed keys in ~/.ssh/authorized_keys");
+            } else {
+                for e in entries {
+                    println!("  {}\t{}\t{}", e.label, e.algorithm, e.fingerprint);
+                }
+            }
+        }
+        Command::Untrust { label } => {
+            let n = trust::remove(&label)?;
+            println!("sshmux: removed {n} key(s) labelled '{label}'");
+        }
+    }
+    Ok(())
+}
+
+/// Read a single line from stdin (used for `sshmux trust -`).
+fn read_stdin_line() -> Result<String> {
+    use std::io::BufRead as _;
+    let mut s = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut s)
+        .context("reading public key from stdin")?;
+    Ok(s)
+}
+
+async fn run_serve(args: ServeArgs) -> Result<()> {
     let user = match args.user.as_deref().map(str::trim) {
         Some(u) if !u.is_empty() => u.to_string(),
         _ => bail!("could not determine username; pass --user"),

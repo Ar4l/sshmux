@@ -1,6 +1,6 @@
 [package]
 name = "sshmux-cli"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "One-command connect for sshmux: starts a token-gated ws->tcp relay and a cloudflared quick tunnel, then prints a QR + URL to open the sshmux web app pre-filled."
 
@@ -22,4 +22,8 @@ anyhow = "1"
 rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
+# Pinned to the exact version already in the workspace lockfile (pulled by russh in
+# the web crate) so `trust` reuses that crate rather than adding a distinct one, and
+# round-trips public keys with the browser's `PrivateKey::to_openssh` export.
+ssh-key = { version = "=0.7.0-rc.11", features = ["ed25519"] }
 sshmux-link = { path = "../link" }

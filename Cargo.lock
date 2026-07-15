@@ -2852,7 +2852,7 @@ dependencies = [
 
 [[package]]
 name = "sshmux"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async_io_stream",
@@ -2880,7 +2880,7 @@ dependencies = [
 
 [[package]]
 name = "sshmux-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -2889,6 +2889,7 @@ dependencies = [
  "qrcode",
  "rand 0.8.7",
  "sha2 0.10.9",
+ "ssh-key",
  "sshmux-link",
  "tokio",
  "tokio-tungstenite",
@@ -2896,7 +2897,7 @@ dependencies = [
 
 [[package]]
 name = "sshmux-link"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "base64",
  "serde",

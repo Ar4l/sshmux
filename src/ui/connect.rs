@@ -45,6 +45,81 @@ fn store_saved(_form: &SavedForm) {}
 #[cfg(not(target_arch = "wasm32"))]
 fn clear_saved() {}
 
+const DEVICE_KEY: &str = "sshmux.device";
+
+/// A generated device identity, persisted SEPARATELY from `SavedForm` so it is
+/// never coupled to — or cleared alongside — the ephemeral bridge URL/token.
+/// This is what makes every subsequent scan zero-click, not just the first.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct DeviceKey {
+    private_key: String,
+    username: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn load_device() -> Option<DeviceKey> {
+    use gloo_storage::Storage as _;
+    gloo_storage::LocalStorage::get(DEVICE_KEY).ok()
+}
+#[cfg(target_arch = "wasm32")]
+fn store_device(d: &DeviceKey) {
+    use gloo_storage::Storage as _;
+    let _ = gloo_storage::LocalStorage::set(DEVICE_KEY, d);
+}
+#[cfg(target_arch = "wasm32")]
+fn clear_device() {
+    use gloo_storage::Storage as _;
+    gloo_storage::LocalStorage::delete(DEVICE_KEY);
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn load_device() -> Option<DeviceKey> {
+    None
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn store_device(_d: &DeviceKey) {}
+#[cfg(not(target_arch = "wasm32"))]
+fn clear_device() {}
+
+/// Generate a fresh ed25519 keypair in-browser. Returns `(openssh_private_pem,
+/// authorized_keys_public_line)`. The private key never leaves the browser; the
+/// public line is shown for the user to paste into `sshmux trust`. Seeded from
+/// fresh browser entropy — never from the URL (no secret in the deep link).
+#[cfg(target_arch = "wasm32")]
+fn generate_device_key(label: &str) -> Result<(String, String), String> {
+    use russh::keys::ssh_key::{private::Ed25519Keypair, LineEnding};
+    use russh::keys::PrivateKey;
+
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|e| e.to_string())?;
+    let key = PrivateKey::from(Ed25519Keypair::from_seed(&seed));
+    let pem = key
+        .to_openssh(LineEnding::LF)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    let mut public = key.public_key().clone();
+    public.set_comment(format!("sshmux-device-{}", sanitize_label(label)));
+    let authline = public.to_openssh().map_err(|e| e.to_string())?;
+    Ok((pem, authline))
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn generate_device_key(_label: &str) -> Result<(String, String), String> {
+    Err("key generation is only available in the browser".into())
+}
+
+/// Constrain a label to `[A-Za-z0-9_.-]` (matching the CLI's `--label`), so the
+/// suggested `sshmux trust` command is safe to paste. Defaults to "device".
+fn sanitize_label(label: &str) -> String {
+    let s: String = label
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        .collect();
+    if s.is_empty() {
+        "device".to_string()
+    } else {
+        s
+    }
+}
+
 /// Read a deep link from the URL fragment (`…/#c=<base64url>`), left by the
 /// `sshmux` CLI's QR/URL. On success the fragment is cleared from the address
 /// bar so the embedded relay token isn't retained in history or leaked via a
@@ -95,11 +170,29 @@ pub fn ConnectScreen() -> impl IntoView {
         Some(dl) => (Some(dl.b), Some(dl.u), dl.fp),
         None => (None, None, None),
     };
+    // A generated device key lives in its own store; it takes precedence and
+    // drives the key-auth flow, and is never cleared by the SavedForm/remember
+    // path (that path still governs only the bridge/password form).
+    let device = load_device();
     let bridge_url = RwSignal::new(dl_bridge.unwrap_or(saved.bridge_url));
-    let username = RwSignal::new(dl_user.unwrap_or(saved.username));
-    let use_key = RwSignal::new(saved.use_key);
+    let username = RwSignal::new(
+        dl_user
+            .or_else(|| {
+                device
+                    .as_ref()
+                    .map(|d| d.username.clone())
+                    .filter(|u| !u.is_empty())
+            })
+            .unwrap_or(saved.username),
+    );
+    let use_key = RwSignal::new(saved.use_key || device.is_some());
     let password = RwSignal::new(saved.password);
-    let private_key = RwSignal::new(saved.private_key);
+    let private_key = RwSignal::new(
+        device
+            .as_ref()
+            .map(|d| d.private_key.clone())
+            .unwrap_or(saved.private_key),
+    );
     // Expected host-key fingerprint from the deep link (verified first use).
     let expected_fp = RwSignal::new(dl_fp);
 
@@ -111,6 +204,11 @@ pub fn ConnectScreen() -> impl IntoView {
     // everything but the secret, jump the cursor straight into it.
     let password_ref: NodeRef<Input> = NodeRef::new();
     let key_ref: NodeRef<Textarea> = NodeRef::new();
+
+    // Device-key generation UI state. `device_pubkey` holds the freshly generated
+    // authorized_keys line (empty until "generate" is clicked); it is NOT persisted.
+    let device_label = RwSignal::new(String::new());
+    let device_pubkey = RwSignal::new(String::new());
 
     let do_connect = move |trust_changed_key: bool| {
         if connecting.get_untracked() {
@@ -235,6 +333,28 @@ pub fn ConnectScreen() -> impl IntoView {
         }
     };
 
+    // Generate a throwaway ed25519 key in-browser: the private key is persisted
+    // in its own device store; the public line is shown to paste into
+    // `sshmux trust` on the target machine. Never touches the URL.
+    let on_generate = move |_| match generate_device_key(&device_label.get_untracked()) {
+        Ok((pem, authline)) => {
+            private_key.set(pem.clone());
+            use_key.set(true);
+            store_device(&DeviceKey {
+                private_key: pem,
+                username: username.get_untracked(),
+            });
+            device_pubkey.set(authline);
+            state.error.set(None);
+        }
+        Err(e) => state.error.set(Some(format!("key generation failed: {e}"))),
+    };
+    let on_forget = move |_| {
+        clear_device();
+        private_key.set(String::new());
+        device_pubkey.set(String::new());
+    };
+
     view! {
         <div class="screen screen-connect">
             <div class="connect-scroll">
@@ -335,22 +455,64 @@ pub fn ConnectScreen() -> impl IntoView {
                         }
                     }
                 >
-                    <label class="field">
-                        <span class="field-label">"private key (OpenSSH PEM)"</span>
-                        <textarea
-                            class="key-input"
-                            rows="6"
-                            autocapitalize="off"
-                            spellcheck="false"
-                            node_ref=key_ref
-                            placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                            prop:value=move || private_key.get()
-                            on:input:target=move |ev| private_key.set(ev.target().value())
-                        ></textarea>
-                        <span class="field-hint">
-                            "unencrypted keys only (MVP) — prefer a throwaway key restricted on the server"
-                        </span>
-                    </label>
+                    <div class="key-pane">
+                        <div class="device-key">
+                            <label class="field">
+                                <span class="field-label">"device label"</span>
+                                <input
+                                    type="text"
+                                    autocapitalize="off"
+                                    spellcheck="false"
+                                    placeholder="my-phone"
+                                    prop:value=move || device_label.get()
+                                    on:input:target=move |ev| device_label.set(ev.target().value())
+                                />
+                            </label>
+                            <div class="device-actions">
+                                <button class="btn btn-secondary" type="button" on:click=on_generate>
+                                    "generate device key"
+                                </button>
+                                <Show when=move || !private_key.get().is_empty()>
+                                    <button class="btn btn-ghost" type="button" on:click=on_forget>
+                                        "forget this device"
+                                    </button>
+                                </Show>
+                            </div>
+                            <Show when=move || !device_pubkey.get().is_empty()>
+                                <p class="field-hint">
+                                    "On the machine you're connecting to, run this once, then scan again:"
+                                </p>
+                                <textarea
+                                    class="key-input"
+                                    rows="3"
+                                    readonly
+                                    prop:value=move || {
+                                        format!(
+                                            "echo '{}' | sshmux trust - --label {}",
+                                            device_pubkey.get(),
+                                            sanitize_label(&device_label.get()),
+                                        )
+                                    }
+                                ></textarea>
+                            </Show>
+                        </div>
+                        <label class="field">
+                            <span class="field-label">"private key (OpenSSH PEM)"</span>
+                            <textarea
+                                class="key-input"
+                                rows="6"
+                                autocapitalize="off"
+                                spellcheck="false"
+                                node_ref=key_ref
+                                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                                prop:value=move || private_key.get()
+                                on:input:target=move |ev| private_key.set(ev.target().value())
+                            ></textarea>
+                            <span class="field-hint">
+                                "generate a device key above, or paste an unencrypted key (prefer a throwaway, server-restricted key)"
+                            </span>
+                        </label>
+                    </div>
                 </Show>
 
                 <label class="remember-row">
@@ -372,6 +534,13 @@ pub fn ConnectScreen() -> impl IntoView {
                 <Show when=move || remember.get()>
                     <p class="field-hint warn">
                         "credentials are saved unencrypted in this browser's localStorage"
+                    </p>
+                </Show>
+                <Show when=move || use_key.get() && !private_key.get().is_empty()>
+                    <p class="field-hint warn">
+                        "a device key is stored unencrypted in this browser. Revoke with "
+                        <code>"sshmux untrust <label>"</code>
+                        " on the server, or \"forget this device\" above."
                     </p>
                 </Show>
             </div>

@@ -63,6 +63,33 @@ any TCP dial), and the URL also carries the host-key fingerprint so first use is
 *verified*, not blind TOFU. The CLI lives in `cli/`; the shared deep-link schema
 in `link/`. See `docs/BRIDGE.md` for the manual bridge alternative.
 
+### Zero-click connect with a device key
+
+To skip typing a password on every connect, pair the device once:
+
+1. In the web app, choose **private key** → **generate device key** (an ed25519
+   key is generated *in the browser*; the private key never leaves it and is
+   never put in the URL). Copy the shown one-liner.
+2. Run it on the machine you're connecting to:
+
+   ```sh
+   echo 'ssh-ed25519 AAAA… sshmux-device-my-phone' | sshmux trust - --label my-phone
+   sshmux trusted            # list keys sshmux manages
+   sshmux untrust my-phone   # revoke later
+   ```
+
+After that, every scanned QR / opened URL connects with **no password and no
+click**. `sshmux trust` appends the public key to `~/.ssh/authorized_keys` as
+`from="127.0.0.1",restrict …` — scoped to a loopback source (the relay dials
+sshd from `127.0.0.1`) and with forwarding/X11/agent disabled.
+
+Two things to know: unlike the relay token (which dies on Ctrl-C), a trusted key
+**persists** until you `sshmux untrust` it or "forget this device" in the app;
+and `restrict` does *not* block command execution (the app drives tmux over SSH
+`exec`), so the key is a full command-execution login as that user from
+loopback. Trust is only ever established by you running `sshmux trust` locally —
+the relay never installs keys, so a leaked URL can't plant one.
+
 ## Quickstart
 
 ```sh
@@ -92,6 +119,15 @@ and point the connect screen at `wss://your-bridge`.
 - **Unencrypted-key caveat (MVP).** Private-key auth accepts only pasted
   *unencrypted* OpenSSH keys, kept in memory. Prefer a throwaway key
   restricted on the server, or password auth.
+- **Device keys are stored unencrypted.** A generated device key lives in
+  `localStorage` (like any remembered credential) — readable by any script on
+  the app origin. It is a throwaway ed25519 key, loopback-scoped via
+  `from="127.0.0.1"`, and revocable with `sshmux untrust` / "forget this
+  device". WebCrypto non-extractable keys aren't usable here because russh signs
+  in-wasm and needs the raw key.
+- **Trust is local and manual.** `sshmux trust` is the only way a key enters
+  `authorized_keys`; the relay never receives or installs keys, so a leaked
+  (ephemeral) URL cannot plant a persistent one.
 
 ## Docs
 

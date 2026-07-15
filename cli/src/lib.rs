@@ -3,4 +3,5 @@
 
 pub mod hostkey;
 pub mod relay;
+pub mod trust;
 pub mod tunnel;
