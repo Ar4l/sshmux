@@ -50,6 +50,14 @@ pub async fn start(local_port: u16) -> Result<Tunnel> {
         .args([
             "tunnel",
             "--no-autoupdate",
+            // Force HTTP/2 (TCP) instead of the default QUIC (UDP/7844). Many
+            // networks — notably Cloudflare WARP / Zero Trust and corporate
+            // firewalls — block outbound UDP to the edge, which leaves the
+            // tunnel unregistered and every request failing with HTTP 530
+            // (browser sees a 1006 WebSocket close). HTTP/2 rides TCP/443-style
+            // egress and gets through.
+            "--protocol",
+            "http2",
             "--url",
             &format!("http://127.0.0.1:{local_port}"),
         ])
@@ -64,29 +72,38 @@ pub async fn start(local_port: u16) -> Result<Tunnel> {
         .take()
         .ok_or_else(|| anyhow!("cloudflared stderr not captured"))?;
 
-    // Drain stderr for the whole tunnel lifetime; report the first URL found via
-    // a oneshot. Continuing to read past the URL is what keeps cloudflared from
-    // getting EPIPE on stderr and dying.
+    // Drain stderr for the whole tunnel lifetime; signal readiness via a oneshot
+    // only once cloudflared has BOTH announced the URL AND registered an edge
+    // connection — otherwise early requests hit HTTP 530 (tunnel not yet up).
+    // Continuing to read past that point keeps cloudflared from getting EPIPE on
+    // stderr and dying.
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let drain = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
+        let mut url: Option<String> = None;
         let mut tx = Some(tx);
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(t) = tx.take() {
-                match extract_trycloudflare_url(&line) {
-                    Some(url) => {
-                        let _ = t.send(url);
-                    }
-                    None => tx = Some(t),
+            if url.is_none() {
+                if let Some(u) = extract_trycloudflare_url(&line) {
+                    url = Some(u);
                 }
+            }
+            if tx.is_some() && url.is_some() && line.contains("Registered tunnel connection") {
+                let _ = tx.take().unwrap().send(url.clone().unwrap());
             }
         }
     });
 
     let public_url = match tokio::time::timeout(READY_TIMEOUT, rx).await {
         Ok(Ok(url)) => url,
-        Ok(Err(_)) => bail!("cloudflared exited before reporting a trycloudflare.com URL"),
-        Err(_) => bail!("timed out waiting for cloudflared to report a URL"),
+        Ok(Err(_)) => bail!(
+            "cloudflared exited before the tunnel registered — check network egress \
+             (this build already forces --protocol http2)"
+        ),
+        Err(_) => bail!(
+            "timed out waiting for cloudflared to establish the tunnel (30s) — \
+             the network may be blocking outbound access to the Cloudflare edge"
+        ),
     };
 
     Ok(Tunnel {
