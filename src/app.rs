@@ -115,6 +115,9 @@ mod runtime {
     const PANES_MS: u32 = 5_000;
     const CAPTURE_MS: u32 = 2_000;
     const TAIL_MS: u32 = 2_000;
+    // Cap retained chat transcript items so a remote that endlessly appends to
+    // the (untrusted) transcript can't grow client memory / the DOM without bound.
+    const MAX_CHAT_ITEMS: usize = 5_000;
 
     pub fn wire(state: AppState, ui: UiState) {
         pane_list_loop(state, ui);
@@ -385,7 +388,16 @@ mod runtime {
                         match res {
                             Ok(items) => {
                                 if !items.is_empty() {
-                                    ui.chat_items.update(|v| v.extend(items));
+                                    ui.chat_items.update(|v| {
+                                        v.extend(items);
+                                        // Cap retained items so a remote that
+                                        // endlessly appends to the transcript
+                                        // can't grow client memory / DOM without
+                                        // bound. Keep the most recent MAX_CHAT_ITEMS.
+                                        if v.len() > MAX_CHAT_ITEMS {
+                                            v.drain(0..v.len() - MAX_CHAT_ITEMS);
+                                        }
+                                    });
                                 }
                             }
                             Err(ClaudeError::Ssh(SshError::Disconnected)) => {

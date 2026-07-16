@@ -20,7 +20,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Accept loop. Runs until the process exits. `token` is the bearer secret; it
 /// is never logged.
@@ -31,7 +31,14 @@ pub async fn serve(
     max_conns: usize,
 ) -> Result<()> {
     let expected_path = format!("/{token}");
+    // `sem` bounds ESTABLISHED (post-token) connections. A separate, more
+    // generous `handshakes` budget bounds IN-FLIGHT (pre-token) upgrades so a
+    // flood of slow/never-completing handshakes can't consume the scarce
+    // established slots that authenticated clients need (unauthenticated
+    // slowloris). (Per-peer limits are moot: the relay is loopback-only and all
+    // connections arrive via cloudflared from 127.0.0.1.)
     let sem = Arc::new(Semaphore::new(max_conns));
+    let handshakes = Arc::new(Semaphore::new(max_conns.saturating_mul(4).max(16)));
 
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -44,9 +51,31 @@ pub async fn serve(
         let expected_path = expected_path.clone();
         let target = target.clone();
         let sem = Arc::clone(&sem);
+        let handshakes = Arc::clone(&handshakes);
 
         tokio::spawn(async move {
-            // Bound concurrency; drop the connection if we're at capacity.
+            // A pending (pre-token) handshake takes only a handshake permit —
+            // NOT one of the scarce established slots — and is bounded by a
+            // short deadline so stalled upgrades recycle quickly.
+            let hs_permit = match handshakes.try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    eprintln!("relay: too many pending handshakes, refusing connection");
+                    return;
+                }
+            };
+            let ws = match upgrade(stream, &expected_path).await {
+                Ok(ws) => ws,
+                // Never interpolate the token; `e` may include the request path
+                // on a rejected upgrade, so keep messages generic.
+                Err(e) => {
+                    eprintln!("relay: connection from {peer} ended: {e}");
+                    return;
+                }
+            };
+            // Token validated. Only now claim an established-connection slot and
+            // dial the SSH target; drop the handshake permit so it frees up.
+            drop(hs_permit);
             let permit = match sem.try_acquire_owned() {
                 Ok(p) => p,
                 Err(_) => {
@@ -54,9 +83,7 @@ pub async fn serve(
                     return;
                 }
             };
-            if let Err(e) = handle(stream, &expected_path, &target).await {
-                // Never interpolate the token; `e` may include the request path
-                // on a rejected upgrade, so keep messages generic.
+            if let Err(e) = dial_and_pipe(ws, &target).await {
                 eprintln!("relay: connection from {peer} ended: {e}");
             }
             drop(permit);
@@ -64,8 +91,12 @@ pub async fn serve(
     }
 }
 
-async fn handle(stream: TcpStream, expected_path: &str, target: &str) -> Result<()> {
-    // Gate on the token DURING the upgrade, before touching the SSH target.
+/// Perform the WebSocket upgrade, gating on the token DURING the handshake so a
+/// wrong/missing token yields HTTP 404 and the caller never dials the target.
+async fn upgrade(
+    stream: TcpStream,
+    expected_path: &str,
+) -> Result<tokio_tungstenite::WebSocketStream<TcpStream>> {
     let mut path_ok = false;
     let callback = |req: &Request, resp: Response| -> std::result::Result<Response, ErrorResponse> {
         if ct_eq(req.uri().path().as_bytes(), expected_path.as_bytes()) {
@@ -92,8 +123,14 @@ async fn handle(stream: TcpStream, expected_path: &str, target: &str) -> Result<
         Err(_) => anyhow::bail!("handshake timed out"),
     };
     debug_assert!(path_ok, "upgrade only succeeds when the token path matched");
+    Ok(ws)
+}
 
-    // Only now do we dial the SSH target.
+/// Dial the SSH target (only reached after a valid token) and pipe bytes.
+async fn dial_and_pipe(
+    ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+    target: &str,
+) -> Result<()> {
     let tcp = TcpStream::connect(target).await?;
     pipe(ws, tcp).await
 }

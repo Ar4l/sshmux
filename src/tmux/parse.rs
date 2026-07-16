@@ -6,6 +6,11 @@ use super::{Pane, TmuxError};
 /// Field separator used in the list-panes -F format string.
 pub const SEP: char = '\u{241E}';
 
+/// Cap on pane width/height parsed from (untrusted) tmux output, so a hostile
+/// remote can't hand a huge dimension to the terminal grid allocator. Well
+/// above any legitimate pane size; the renderer clamps again as a backstop.
+const MAX_PANE_DIM: u32 = 1000;
+
 /// Parse `tmux list-panes -a -F` output (one pane per line, SEP-delimited
 /// fields in the order of the `Pane` struct).
 pub fn parse_list_panes(out: &str) -> Result<Vec<Pane>, TmuxError> {
@@ -43,8 +48,8 @@ fn parse_pane_line(line: &str) -> Option<Pane> {
         command: f[4].to_string(),
         path: f[5].to_string(),
         title,
-        width: num(f[n - 3])? as u16,
-        height: num(f[n - 2])? as u16,
+        width: num(f[n - 3])?.min(MAX_PANE_DIM) as u16,
+        height: num(f[n - 2])?.min(MAX_PANE_DIM) as u16,
         active: f[n - 1] == "1",
     })
 }
@@ -56,7 +61,8 @@ pub fn parse_sized_capture(out: &str) -> Result<(u16, u16, String), TmuxError> {
     let mut it = first.split_whitespace();
     let mut dim = || {
         it.next()
-            .and_then(|v| v.parse::<u16>().ok())
+            .and_then(|v| v.parse::<u32>().ok())
+            .map(|v| v.min(MAX_PANE_DIM) as u16)
             .ok_or_else(|| TmuxError::Parse(format!("bad pane size line: {first:?}")))
     };
     let w = dim()?;
@@ -149,6 +155,17 @@ mod tests {
         assert_eq!(text, "line1\nline2");
         let (w, h, text) = parse_sized_capture("80 24\n").unwrap();
         assert_eq!((w, h, text.as_str()), (80, 24, ""));
+    }
+
+    #[test]
+    fn oversized_dims_are_clamped() {
+        // A hostile remote reporting a huge pane must not reach the grid allocator.
+        let out = line(&["%0", "s", "0", "w", "zsh", "/tmp", "t", "65000", "65000", "1"]);
+        let p = parse_list_panes(&out).unwrap();
+        assert_eq!((p[0].width, p[0].height), (1000, 1000));
+
+        let (w, h, _) = parse_sized_capture("65000 65000\nx").unwrap();
+        assert_eq!((w, h), (1000, 1000));
     }
 
     #[test]

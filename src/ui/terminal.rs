@@ -1,6 +1,13 @@
 use avt::{Color, Pen, Vt};
 use leptos::prelude::*;
 
+/// Upper bound on terminal grid dimensions. The pane width/height come from the
+/// remote (a possibly hostile server/bridge) and feed `Vt::new`, which eagerly
+/// allocates the whole `cols * rows` cell grid. Without a cap, a crafted pane
+/// size (e.g. 65535x65535) forces a multi-gigabyte allocation that crashes the
+/// tab. No real terminal is this large; clamp well above any legitimate size.
+const MAX_TERM_DIM: usize = 1000;
+
 /// Terminal view: feeds captured pane text (with ANSI escapes) into an
 /// `avt::Vt` sized to the pane, then renders the visible screen as
 /// run-merged `<span>`s with gruvbox ANSI color classes. All content goes
@@ -14,8 +21,8 @@ pub fn TerminalView(
     width: u16,
     height: u16,
 ) -> impl IntoView {
-    let cols = width.max(1) as usize;
-    let rows = height.max(1) as usize;
+    let cols = (width.max(1) as usize).min(MAX_TERM_DIM);
+    let rows = (height.max(1) as usize).min(MAX_TERM_DIM);
     view! {
         <div class="terminal-scroll">
             <pre class="terminal">{move || render_screen(&text.get(), cols, rows)}</pre>

@@ -24,21 +24,24 @@ jobs:
             target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Third-party (and GitHub) actions are pinned to immutable commit SHAs so a
+      # compromised upstream tag can't inject code into the released binary.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       # musl builds (both x86_64 and aarch64) are produced with cargo-zigbuild:
       # zig supplies the C compiler + linker, so we don't depend on apt's
       # musl-tools package (the arm64 mirror ports.ubuntu.com is unreliable and
       # the aarch64 job previously failed fetching musl-tools with exit 100).
       - name: Set up cargo-zigbuild
         if: contains(matrix.target, 'linux-musl')
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
         with:
           tool: cargo-zigbuild
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         if: contains(matrix.target, 'linux-musl')
       - name: Build (CLI only, static on musl)
         if: contains(matrix.target, 'linux-musl')
@@ -50,6 +53,6 @@ jobs:
         run: |
           tar -C target/${{ matrix.target }}/release -czf sshmux-${{ matrix.target }}.tar.gz sshmux
           shasum -a 256 sshmux-${{ matrix.target }}.tar.gz
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: sshmux-${{ matrix.target }}.tar.gz

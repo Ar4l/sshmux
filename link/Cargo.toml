@@ -1,6 +1,6 @@
 [package]
 name = "sshmux-link"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 
 # Shared deep-link schema, compiled into BOTH the wasm web app and the native
